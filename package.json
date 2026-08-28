@@ -1,0 +1,22 @@
+{
+  "name": "airsync-signaling",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebRTC signaling server that pairs an AirSync phone and laptop and relays SDP/ICE between them when they are on different networks",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node test/scenario.js",
+    "test:limits": "node test/limits.js",
+    "test:turn": "node test/turn-credentials.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
