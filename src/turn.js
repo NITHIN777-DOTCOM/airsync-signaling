@@ -52,50 +52,91 @@ export function buildIceServers(creds) {
  * malformed body) so the caller can fall back — a failure here must never surface as a
  * request error.
  *
+ * Request shape (Metered's Create-Credential endpoint):
+ *   POST https://<app>.metered.live/api/v1/turn/credential?secretKey=<SECRET_KEY>
+ *   Content-Type: application/json
+ *   { "expiryInSeconds": <ttl>, "label": "<label>" }
+ *
+ * The Secret Key goes in the `?secretKey=` query parameter — Metered does not read it
+ * from a header or the body. See `config.metered.secretKey` for the Secret Key vs.
+ * per-credential API Key distinction.
+ *
+ * Success response shape:
+ *   { username, password, expiryInSeconds, label, apiKey, expired }
+ * We take `username` / `password`. `apiKey` here is the *credential-scoped* fetch key
+ * for this one credential and is intentionally ignored — it is not what a client needs.
+ *
  * The call is bounded by `config.metered.apiTimeoutMs` via an AbortController, so a
  * hung upstream cannot stall the `/turn-credentials` response.
  */
 async function fetchDynamicTurnCredentials() {
   const { metered } = config;
-  if (!metered.apiKey) return null;
+  if (!metered.secretKey) return null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), metered.apiTimeoutMs);
 
+  // Host only, never the full URL — the `?secretKey=` must not reach the logs.
+  let apiHost = metered.apiUrl;
   try {
-    const url = `${metered.apiUrl}?secretKey=${encodeURIComponent(metered.apiKey)}`;
+    apiHost = new URL(metered.apiUrl).host;
+  } catch {
+    log.warn('turn_metered_api_failed', { reason: 'bad_api_url', apiUrl: metered.apiUrl });
+    clearTimeout(timer);
+    return null;
+  }
+
+  try {
+    const url = `${metered.apiUrl}?secretKey=${encodeURIComponent(metered.secretKey)}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expiryInSeconds: metered.credentialTtlSeconds }),
+      body: JSON.stringify({
+        expiryInSeconds: metered.credentialTtlSeconds,
+        label: metered.credentialLabel
+      }),
       signal: controller.signal
     });
 
     if (!response.ok) {
-      log.warn('turn_metered_api_failed', { reason: 'http_error', status: response.status });
+      log.warn('turn_metered_api_failed', { reason: 'http_error', status: response.status, apiHost });
       return null;
     }
 
     const data = await response.json().catch(() => null);
-    // Metered returns { username, password, expiryInSeconds, ... }; accept a couple of
-    // credential field spellings defensively.
     const username = data && typeof data.username === 'string' ? data.username : null;
-    const credential =
-      data && (data.password || data.credential || data.key || null);
+    const password = data && typeof data.password === 'string' ? data.password : null;
 
-    if (!username || !credential) {
+    if (!username || !password) {
       log.warn('turn_metered_api_failed', { reason: 'missing_fields_in_response' });
+      return null;
+    }
+
+    if (data.expired === true) {
+      log.warn('turn_metered_api_failed', { reason: 'credential_returned_expired' });
       return null;
     }
 
     return {
       username,
-      credential,
+      credential: password,
       ttlSeconds: Number(data.expiryInSeconds) || metered.credentialTtlSeconds
     };
   } catch (err) {
     const reason = err && err.name === 'AbortError' ? 'timeout' : 'request_error';
-    log.warn('turn_metered_api_failed', { reason });
+    // For a Node fetch network failure the useful text (e.g. "getaddrinfo ENOTFOUND
+    // <host>", "ECONNREFUSED") and code (e.g. ENOTFOUND, ECONNREFUSED, ETIMEDOUT) are
+    // on err.cause, not err.message ("fetch failed") — but fall back to err's own
+    // fields if cause isn't present. None of it contains the secretKey; no stack trace.
+    const code = err && (err.cause?.code || err.code);
+    const message = err && (err.cause?.message || err.message);
+    const detail = code || message;
+    log.warn('turn_metered_api_failed', {
+      reason,
+      apiHost,
+      ...(code ? { code } : {}),
+      ...(detail ? { detail } : {})
+    });
     return null;
   } finally {
     clearTimeout(timer);

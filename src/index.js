@@ -1,6 +1,6 @@
 import { createSignalingServer } from './server.js';
 import { log } from './logger.js';
-import { hasMeteredApiKey, hasStaticTurnCredentials, hasAnyTurnCredentialSource } from './config.js';
+import { hasMeteredSecretKey, hasStaticTurnCredentials, hasAnyTurnCredentialSource } from './config.js';
 
 const server = createSignalingServer();
 
@@ -8,7 +8,7 @@ await server.listen();
 
 if (hasAnyTurnCredentialSource()) {
   log.info('turn_credentials_source', {
-    dynamic: hasMeteredApiKey(),
+    dynamic: hasMeteredSecretKey(),
     staticFallback: hasStaticTurnCredentials()
   });
 } else {

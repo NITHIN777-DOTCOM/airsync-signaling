@@ -202,11 +202,20 @@ where they come from is resolved per request:
 
 | # | source | when |
 |---|---|---|
-| 1 | **dynamic** | `METERED_API_KEY` is set — the server calls Metered's *Create TURN Credential* REST API and mints a fresh pair that auto-expires after `TURN_CREDENTIAL_TTL_SECONDS` (default 3600). This is the preferred path: rotating, per-request credentials that cannot outlive their TTL if leaked. |
+| 1 | **dynamic** | `METERED_API_KEY` is set — the server `POST`s to Metered's *Create TURN Credential* REST API (`<app>.metered.live/api/v1/turn/credential?secretKey=…`, body `{expiryInSeconds, label}`) and mints a fresh pair that auto-expires after `TURN_CREDENTIAL_TTL_SECONDS` (default 3600). This is the preferred path: rotating, per-request credentials that cannot outlive their TTL if leaked. |
 | 2 | **static fallback** | the Metered key is absent, **or** the API call returned non-2xx / timed out (`METERED_API_TIMEOUT_MS`, default 5 s) — the server falls back to the fixed `TURN_USERNAME` / `TURN_PASSWORD` pair if both are set. |
 | 3 | **stun-only** | neither source is available — the response is the STUN entry alone (below). Still `200`; signaling and direct/STUN P2P are unaffected, only the relayed fallback is lost. |
 
-Each response logs a `turn_credentials_issued` line with `source: "dynamic" | "static-fallback" | "stun-only"` (never the credential values). A `turn_credentials_missing` warning is logged at startup only when *neither* source is configured.
+Each response logs a `turn_credentials_issued` line with `source: "dynamic" | "static-fallback" | "stun-only"` (never the credential values); a failed Metered call logs `turn_metered_api_failed` with a `reason`. A `turn_credentials_missing` warning is logged at startup only when *neither* source is configured.
+
+> ⚠️ **`METERED_API_KEY` must be the account-wide _Secret Key_ from the Metered
+> dashboard's _Developers_ tab** — the key that can create/list/delete TURN credentials.
+> It is **not** the per-credential _API Key_ shown next to an individual credential on
+> the _TURN Credentials_ page: that one is credential-scoped, can only fetch that single
+> credential's ICE list, and will fail here. (The env var keeps the `_API_KEY` name for
+> compatibility; the value it needs is the Secret Key.) The Metered success response
+> also contains its own `apiKey` field — that is the credential-scoped key for the
+> credential just minted, and the server deliberately ignores it.
 
 STUN-only response:
 
@@ -245,9 +254,10 @@ Every value is environment-overridable, so limits can be tuned on Railway (servi
 | `RATE_LIMIT_WINDOW_MS` | `60000` | rate-limit window |
 | `CHALLENGE_TTL_MS` | `10000` | nonce lifetime |
 | `TURN_AUTH_WINDOW_MS` | `30000` | clock-skew allowance on the signed timestamp for `GET /turn-credentials` |
-| `METERED_API_KEY` | _(unset)_ | **secret** — Metered REST API key. When set, `/turn-credentials` mints a fresh short-lived credential pair per request. The preferred credential source. |
+| `METERED_API_KEY` | _(unset)_ | **secret** — the Metered **Secret Key** (Developers tab), *not* the per-credential API Key. When set, `/turn-credentials` mints a fresh short-lived credential pair per request. The preferred credential source. |
 | `TURN_CREDENTIAL_TTL_SECONDS` | `3600` | lifetime requested for each dynamically-minted credential pair (Metered's `expiryInSeconds`) |
-| `METERED_API_URL` | `https://relay.metered.ca/api/v1/turn/credential` | Metered *Create TURN Credential* endpoint. Override for a dedicated Metered app: `https://<your-app>.metered.live/api/v1/turn/credential`. Not secret. |
+| `METERED_CREDENTIAL_LABEL` | `airsync-signaling` | `label` sent with each Create-Credential call, for spotting them in the Metered dashboard |
+| `METERED_API_URL` | `https://airsync.metered.live/api/v1/turn/credential` | Metered *Create TURN Credential* endpoint. The `airsync` is this account's Metered app name — override if the app is renamed/moved. Not secret. |
 | `METERED_API_TIMEOUT_MS` | `5000` | abort the Metered API call after this long and fall back |
 | `TURN_USERNAME` | _(unset)_ | **secret**, **optional** — static fallback TURN username, used only when the Metered API is unset or fails |
 | `TURN_PASSWORD` | _(unset)_ | **secret**, **optional** — static fallback TURN credential, paired with `TURN_USERNAME` |
@@ -308,9 +318,9 @@ configuration beyond creating the service.
 
    | variable | value |
    |---|---|
-   | `METERED_API_KEY` | your Metered REST API key — **the recommended setup**. The server mints a fresh, auto-expiring credential pair per request. |
+   | `METERED_API_KEY` | the **Secret Key** from Metered → **Developers** tab — **the recommended setup**. The server mints a fresh, auto-expiring credential pair per request. **Not** the per-credential API Key from the TURN Credentials page. |
    | `TURN_CREDENTIAL_TTL_SECONDS` | _(optional)_ credential lifetime, default `3600` |
-   | `METERED_API_URL` | _(optional)_ only if using a dedicated Metered app rather than the shared relay |
+   | `METERED_API_URL` | _(optional)_ only if the Metered app name is not `airsync` (default `https://airsync.metered.live/api/v1/turn/credential`) |
    | `TURN_USERNAME` / `TURN_PASSWORD` | _(optional)_ static fallback pair, used only if the Metered API is unset or unreachable |
 
    The TURN/STUN hostnames are fixed and hardcoded — do not add them as variables. If

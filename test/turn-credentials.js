@@ -12,13 +12,17 @@ import { TestClient } from './client.js';
  * behaviour the test switches per phase; the signaling server is pointed at it via
  * METERED_API_URL.
  *
- *   (a) unauthenticated / bad-signature / stale-timestamp requests are rejected 401
- *   (b) dynamic success      -> TURN entries carry the freshly-minted username/password,
- *                               and dynamic wins even when static env creds are also set
- *   (c) dynamic HTTP error   -> falls back to the static TURN_USERNAME / TURN_PASSWORD pair
- *   (d) dynamic timeout      -> treated as failure, same static fallback
- *   (e) no Metered key, static present -> static-fallback path
- *   (f) neither source       -> STUN-only, still 200, auth still enforced
+ *   (a)  unauthenticated / bad-signature / stale-timestamp requests are rejected 401
+ *   (b)  dynamic success      -> TURN entries carry the freshly-minted username/password,
+ *                                dynamic wins over static env creds, the Secret Key goes
+ *                                in ?secretKey=, the body carries expiryInSeconds + label,
+ *                                and the response's credential-scoped `apiKey` is ignored
+ *   (b2) parsing the exact documented { username, password, expiryInSeconds, label,
+ *                                apiKey, expired } response shape
+ *   (c)  dynamic HTTP error   -> falls back to the static TURN_USERNAME / TURN_PASSWORD pair
+ *   (d)  dynamic timeout      -> treated as failure, same static fallback
+ *   (e)  no Metered key, static present -> static-fallback path
+ *   (f)  neither source       -> STUN-only, still 200, auth still enforced
  *
  * No real credentials anywhere — dynamic and static values are placeholders (override
  * the static pair via TEST_TURN_USERNAME / TEST_TURN_PASSWORD if pointing at a live relay).
@@ -59,9 +63,13 @@ function check(label, condition, detail) {
   }
 }
 
+// A credential-scoped value the real API returns as `apiKey`; the server must ignore it.
+const IGNORED_CREDENTIAL_API_KEY = 'per-credential-apiKey-that-must-be-ignored';
+
 /**
  * Mock Metered "Create TURN Credential" API.
- *   mode 'success' -> 200 { username, password, expiryInSeconds }
+ *   mode 'success' -> 200 with the exact documented shape:
+ *                     { username, password, expiryInSeconds, label, apiKey, expired }
  *   mode 'error'   -> 500
  *   mode 'hang'    -> never responds (exercises the client-side timeout)
  * Records the last request's parsed body + secretKey for assertions.
@@ -93,7 +101,10 @@ function startMeteredMock(port) {
         JSON.stringify({
           username: DYNAMIC_USERNAME,
           password: DYNAMIC_PASSWORD,
-          expiryInSeconds: EXPECTED_TTL
+          expiryInSeconds: EXPECTED_TTL,
+          label: state.lastBody?.label ?? null,
+          apiKey: IGNORED_CREDENTIAL_API_KEY,
+          expired: false
         })
       );
     });
@@ -237,8 +248,49 @@ async function main() {
         mock.state.lastBody?.expiryInSeconds === EXPECTED_TTL,
         JSON.stringify(mock.state.lastBody)
       );
+      check(
+        '(b) Metered API was asked with label "airsync-signaling"',
+        mock.state.lastBody?.label === 'airsync-signaling',
+        JSON.stringify(mock.state.lastBody)
+      );
+      check(
+        '(b) the credential-scoped apiKey field in the response is ignored',
+        JSON.stringify(ok.json).indexOf(IGNORED_CREDENTIAL_API_KEY) === -1
+      );
     } finally {
       dyn.kill('SIGTERM');
+    }
+
+    // ========================================================================
+    console.log('\nPhase 1b — parsing the exact documented success shape\n');
+    // ========================================================================
+    // A standalone, self-contained check that the { username, password,
+    // expiryInSeconds, label, apiKey, expired } body is parsed correctly and only
+    // username/password are surfaced.
+    mock.state.mode = 'success';
+    const PORT_A2 = 8796;
+    const BASE_A2 = `http://127.0.0.1:${PORT_A2}`;
+    const dynShape = await startServer(PORT_A2, {
+      METERED_API_KEY,
+      METERED_API_URL: mock.url,
+      TURN_CREDENTIAL_TTL_SECONDS: '7200'
+    });
+
+    try {
+      const ok = await httpGet(`${BASE_A2}/turn-credentials?${signedQuery(device)}`);
+      check('(b2) valid request returns 200', ok.status === 200, `got ${ok.status}`);
+      checkFullShape('(b2)', ok.json?.iceServers, DYNAMIC_USERNAME, DYNAMIC_PASSWORD);
+      check(
+        '(b2) requested TTL from config is forwarded as expiryInSeconds',
+        mock.state.lastBody?.expiryInSeconds === 7200,
+        JSON.stringify(mock.state.lastBody)
+      );
+      check(
+        '(b2) no field other than username/password leaks into the response',
+        !JSON.stringify(ok.json).match(/expired|apiKey|label/)
+      );
+    } finally {
+      dynShape.kill('SIGTERM');
     }
 
     // ========================================================================

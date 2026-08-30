@@ -90,26 +90,44 @@ export const config = {
   /**
    * Short-lived TURN credential provisioning via Metered's REST API.
    *
-   * When `apiKey` is set, `GET /turn-credentials` calls Metered's "Create TURN
+   * When `secretKey` is set, `GET /turn-credentials` calls Metered's "Create TURN
    * Credential" endpoint once per request to mint a fresh username/password pair that
    * auto-expires after `credentialTtlSeconds`. This is the preferred source: rotating,
    * per-client credentials that cannot outlive their TTL if leaked.
    *
-   * If `apiKey` is unset, or the call fails / times out (`apiTimeoutMs`), turn.js falls
-   * back to the static `config.turn` pair, then to STUN-only.
+   * If `secretKey` is unset, or the call fails / times out (`apiTimeoutMs`), turn.js
+   * falls back to the static `config.turn` pair, then to STUN-only.
    */
   metered: {
-    apiKey: process.env.METERED_API_KEY || null,
+    /**
+     * The **Secret Key** from the Metered dashboard's **Developers** tab — the
+     * account-wide key that authorises creating/listing/deleting TURN credentials.
+     *
+     * IMPORTANT: this is NOT the same as the per-credential **API Key** shown next to
+     * an individual TURN credential on the "TURN Credentials" page. That one is
+     * credential-scoped and only good for fetching that single credential's ICE server
+     * list — it cannot mint new credentials, and using it here fails. The env var is
+     * still named METERED_API_KEY for compatibility, but its value must be the
+     * Developers-tab Secret Key.
+     *
+     * It is sent to Metered as the `?secretKey=` query parameter (see turn.js), which
+     * is how Metered's Create-Credential endpoint expects it — not a header or body field.
+     */
+    secretKey: process.env.METERED_API_KEY || null,
 
     /**
-     * Metered "Create TURN Credential" endpoint. The default targets Metered's shared
-     * relay API; for a dedicated Metered app, set this to
-     * `https://<your-app>.metered.live/api/v1/turn/credential`.
+     * Metered "Create TURN Credential" endpoint, account-specific.
+     *
+     * The `airsync` in the host is this account's Metered **app name** (as shown in the
+     * dashboard). Override via METERED_API_URL if the app is ever renamed or moved.
      */
-    apiUrl: process.env.METERED_API_URL || 'https://relay.metered.ca/api/v1/turn/credential',
+    apiUrl: process.env.METERED_API_URL || 'https://airsync.metered.live/api/v1/turn/credential',
 
     /** Lifetime requested for each minted credential pair (Metered's `expiryInSeconds`). */
     credentialTtlSeconds: num('TURN_CREDENTIAL_TTL_SECONDS', 3600),
+
+    /** `label` sent with each Create-Credential call, for identifying them in the dashboard. */
+    credentialLabel: process.env.METERED_CREDENTIAL_LABEL || 'airsync-signaling',
 
     /**
      * Abort the Metered call after this long and fall back. A slow or hung upstream
@@ -127,13 +145,13 @@ export function hasStaticTurnCredentials() {
 }
 
 /** Whether dynamic (Metered API) credential minting is configured. */
-export function hasMeteredApiKey() {
-  return Boolean(config.metered.apiKey);
+export function hasMeteredSecretKey() {
+  return Boolean(config.metered.secretKey);
 }
 
 /** Whether any TURN credential source — dynamic or static fallback — is available. */
 export function hasAnyTurnCredentialSource() {
-  return hasMeteredApiKey() || hasStaticTurnCredentials();
+  return hasMeteredSecretKey() || hasStaticTurnCredentials();
 }
 
 /**

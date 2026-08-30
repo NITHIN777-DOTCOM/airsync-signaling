@@ -15,9 +15,19 @@ const threshold = LEVELS[config.logLevel] ?? LEVELS.info;
 
 function emit(level, event, fields = {}) {
   if ((LEVELS[level] ?? LEVELS.info) > threshold) return;
+
+  // `msg` is a human-readable one-liner: the event name plus a compact `key=value`
+  // summary of the fields. Railway's log viewer (and most JSON log UIs) render a line
+  // by its `msg`/`message` field — without one, every line shows up blank. The
+  // structured `event` + individual fields are kept alongside for querying.
+  const summary = Object.entries(fields)
+    .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+    .join(' ');
+
   const line = {
     ts: new Date().toISOString(),
     level,
+    msg: summary ? `${event} ${summary}` : event,
     event,
     ...fields
   };
