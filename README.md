@@ -1,8 +1,24 @@
 # AirSync Signaling Server
 
+[![Node.js](https://img.shields.io/badge/Node.js-22-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org)
+[![ws](https://img.shields.io/badge/WebSocket-ws%208.18-010101.svg)](https://github.com/websockets/ws)
+[![Tests](https://img.shields.io/badge/Tests-61%20passing-success.svg)](#tests)
+[![Railway](https://img.shields.io/badge/Deployed%20on-Railway-0B0D0E.svg?logo=railway&logoColor=white)](#deploying-to-railway)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
+
+---
+
 A stateless WebSocket **WebRTC signaling** server that lets an AirSync phone and laptop
 find each other and negotiate a peer-to-peer connection when they are **not** on the
-same network and local mDNS discovery cannot reach.
+same network and local mDNS discovery cannot reach. It authenticates each device by
+challenge/response against the P-256 key it already uses for pairing, relays SDP and ICE
+between the two, and hands out short-lived TURN credentials so the connection can traverse
+NAT. One runtime dependency, no database, no state that outlives a socket.
+
+> **For the full project overview, architecture diagrams and the mobile client, see the main
+> repository: [NITHIN777-DOTCOM/AirSync](https://github.com/NITHIN777-DOTCOM/AirSync).**
+> The desktop receiver lives in
+> [NITHIN777-DOTCOM/AirSync-Desktop](https://github.com/NITHIN777-DOTCOM/AirSync-Desktop).
 
 It only carries the negotiation, never the data:
 
@@ -22,6 +38,48 @@ apps' existing QUEUED/retry logic handles trying again later.
 
 ---
 
+## What this component does
+
+**Device authentication (P-256 / ECDSA).** A connecting client sends its public key; the
+server replies with a random nonce and accepts the socket only once the client returns a
+signature over it that verifies against that key. This proves control of the private key —
+it deliberately does *not* decide which devices may talk to each other, because that trust
+was established locally during pairing and is not this server's to grant. `GET
+/turn-credentials` reuses the same primitive, with the client signing its own current
+timestamp (there is no round-trip on a plain GET) inside a bounded skew window.
+
+**SDP / ICE relay.** Once two authenticated clients name each other by key fingerprint,
+they are paired and offers, answers and ICE candidates are forwarded between them and
+immediately forgotten. Nothing is buffered for a peer that isn't connected — the client is
+told `target device offline` and the app's own queue/retry logic takes it from there.
+
+**TURN credential provisioning.** Three sources, tried in order: mint a fresh short-lived
+pair from Metered.ca's REST API (`METERED_API_KEY`), fall back to a static
+`TURN_USERNAME`/`TURN_PASSWORD` pair, or serve STUN only. Dynamic credentials are the
+preferred path because they expire on their own, so a leaked response ages out instead of
+being a standing grant.
+
+**Limits, everywhere.** Per-address connection-rate limiting and concurrent-socket caps, a
+process-wide connection ceiling, an auth deadline, an unpaired-wait timeout, an idle-session
+timeout, a heartbeat, a maximum frame size, and a nonce TTL. Every one is environment-
+overridable — see [Configuration](#configuration).
+
+**Hosted on Railway.** Deployed from the [`Dockerfile`](Dockerfile) via
+[`railway.json`](railway.json), with `GET /health` as the health-check target.
+
+## Tech stack
+
+| Purpose | Technology |
+| --- | --- |
+| Runtime | Node.js 22 (ESM), `node:22-alpine` in the image |
+| WebSocket server + HTTP upgrade | [`ws`](https://github.com/websockets/ws) 8.18 — the **only** runtime dependency |
+| HTTP endpoints (`/health`, `/turn-credentials`) | Node's built-in `http` module; no web framework |
+| Crypto | Node `crypto` — EC P-256, ECDSA/SHA-256 over X.509 SPKI DER keys |
+| TURN | Metered.ca Create-TURN-Credential API, with a static fallback |
+| Deployment | Docker (multi-stage, non-root) on Railway |
+
+---
+
 ## Quick start (local)
 
 ```bash
@@ -36,6 +94,11 @@ npm test                  # full walkthrough against the running server
 npm run test:limits       # timeout / rate-limit guards (starts its own instance)
 npm run test:turn         # GET /turn-credentials: auth, dynamic creds (mocked Metered API), fallbacks
 ```
+
+<a id="tests"></a>
+**61 checks pass in total** — 21 in the scenario walkthrough, 5 in the limit guards, 35 in
+the TURN-credential suite. `npm test` needs a server already running (it drives a live one);
+the other two start their own instance.
 
 `npm test` covers: health endpoint → client A authenticates and is told its peer is
 absent → client B authenticates → pair forms → SDP offer/answer and ICE candidates
@@ -377,3 +440,9 @@ docker build -t airsync-signaling .
 docker run --rm -e PORT=8080 -p 8080:8080 airsync-signaling
 curl http://127.0.0.1:8080/health
 ```
+
+---
+
+## License
+
+MIT — as declared in `package.json`.
