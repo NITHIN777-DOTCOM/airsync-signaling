@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # Matches node:22-alpine in the Dockerfile, i.e. what Railway actually runs.
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm test` (test/scenario.js) drives a server over a real WebSocket rather
+      # than starting one itself, so it needs an instance already listening on the
+      # default port 8787.
+      - name: Start signaling server
+        run: |
+          npm start > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/server.pid"
+          for _ in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8787/health > /dev/null; then
+              echo "server is up"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "server did not become healthy within 20s"
+          cat "$RUNNER_TEMP/server.log"
+          exit 1
+
+      - name: End-to-end scenario
+        run: npm test
+
+      - name: Stop signaling server
+        if: always()
+        run: kill "$(cat "$RUNNER_TEMP/server.pid")" || true
+
+      # These two spin up their own servers on separate ports with tuned env
+      # overrides, so they run independently of the instance above.
+      - name: Resource-limit guards
+        run: npm run test:limits
+
+      # Uses a mock of the Metered credential API — no real TURN account or secrets.
+      - name: TURN credential handling
+        run: npm run test:turn
+
+      - name: Upload server log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: signaling-server-log
+          path: ${{ runner.temp }}/server.log
+          retention-days: 7

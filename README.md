@@ -1,5 +1,6 @@
 # AirSync Signaling Server
 
+[![CI](https://github.com/NITHIN777-DOTCOM/airsync-signaling/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NITHIN777-DOTCOM/airsync-signaling/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/Node.js-22-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org)
 [![ws](https://img.shields.io/badge/WebSocket-ws%208.18-010101.svg)](https://github.com/websockets/ws)
 [![Tests](https://img.shields.io/badge/Tests-61%20passing-success.svg)](#tests)
